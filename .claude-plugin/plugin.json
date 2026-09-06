@@ -1,0 +1,10 @@
+{
+  "name": "waitlayer",
+  "description": "Three real MCP servers dealt for whatever you are about to do, argued over by four scouts, with the install line - and a plain refusal when the registry holds nothing that does the job.",
+  "version": "1.0.0",
+  "author": {
+    "name": "WAITLAYER"
+  },
+  "homepage": "https://future-assembly-483c0f.vibe.commonsmade.com",
+  "keywords": ["mcp", "registry", "discovery", "council", "waiting"]
+}

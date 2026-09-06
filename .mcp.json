@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "waitlayer": {
+      "type": "http",
+      "url": "https://future-assembly-483c0f.vibe.commonsmade.com/mcp"
+    }
+  }
+}

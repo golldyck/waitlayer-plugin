@@ -1,0 +1,13 @@
+{
+  "name": "waitlayer",
+  "owner": {
+    "name": "WAITLAYER"
+  },
+  "plugins": [
+    {
+      "name": "waitlayer",
+      "source": "./",
+      "description": "The council in your agent's waiting time: three real MCP servers for the task at hand, and an honest no when the registry holds nothing."
+    }
+  ]
+}
