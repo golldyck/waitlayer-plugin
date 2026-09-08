@@ -87,3 +87,29 @@ this plugin already has the one interpreter this needs.
 
 Tests: `python test_stuck.py` — 23 checks, the layer replaced by a local server
 so the suite never burns the model keys the live site shares.
+
+## The loop closes: the layer learns what actually helped
+
+A card is credited **only when the session really ran it**. The hook remembers
+which server it suggested; when a later command succeeds *and that command
+contains the server's own id or its distinctive name*, it posts the help and
+confirms it, so the public Helpers table is ranked by confirmed use.
+
+Confirming on mere success would rank that table by coincidence — the user may
+simply have fixed it themselves — so the weaker rule is deliberately not used.
+Credit is given once per suggestion, never twice.
+
+`~/.claude/waitlayer-stuck.log` says what the layer did, one line per firing:
+
+```
+09-08 11:45:26  DEALT io.github.MukundaKatta/shellquote-mcp after Bash failed 3 times
+09-08 11:47:02  CREDIT io.github.MukundaKatta/shellquote-mcp — its own name was in the command that worked
+09-08 12:03:11  NO-FIT for Edit — the registry holds nothing for this
+```
+
+Breakage is written there too. That is not decoration: a `ReferenceError` inside
+this hook once turned into a silent `{}` — the advice vanished entirely while the
+hook looked healthy, and only the suite caught it. Silence in someone else's
+session is the contract; **traceless** silence is a bug.
+
+Tests: `python test_stuck.py` — 31 checks.

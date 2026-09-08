@@ -92,6 +92,78 @@ function reason(p) {
   return lines.length ? lines[lines.length - 1].slice(0, 180) : '';
 }
 
+/** One line per firing, so the layer can be asked what it actually did.
+ *  Silence and breakage look identical from outside; a journal is the only
+ *  thing that tells them apart. Kept to 200 lines so it cannot become a leak. */
+function note(what) {
+  try {
+    const line = new Date().toISOString().slice(5, 19).replace('T', ' ') + '  ' + what + '\n';
+    const log = path.join(CFG, 'waitlayer-stuck.log');
+    let old = '';
+    try { old = fs.readFileSync(log, 'utf8'); } catch (e) { /* first line */ }
+    const lines = (old + line).split('\n').filter(Boolean).slice(-200);
+    fs.mkdirSync(CFG, { recursive: true });
+    fs.writeFileSync(log, lines.join('\n') + '\n', 'utf8');
+  } catch (e) { /* a journal is never worth an exception */ }
+}
+
+function post(pathname, payload) {
+  const url = SITE + pathname;
+  const client = url.startsWith('http://') ? require('http') : require('https');
+  const data = JSON.stringify(payload);
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const req = client.request({
+      hostname: u.hostname,
+      port: u.port || undefined,
+      path: u.pathname + u.search,
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'User-Agent': UA,
+        'Content-Length': Buffer.byteLength(data) },
+    }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
+    });
+    req.setTimeout(TIMEOUT, () => { req.destroy(new Error('timeout')); });
+    req.on('error', reject);
+    req.write(data);
+    req.end();
+  });
+}
+
+/**
+ * Did the session actually RUN the card we suggested?
+ *
+ * This is the whole honesty of the feedback loop. Confirming help because a
+ * command happened to succeed after we spoke would fill the public Helpers
+ * table with credit the layer did not earn — the user may simply have fixed it
+ * themselves, and a table ranked by "confirmed use" would then be ranked by
+ * coincidence. So a confirmation requires evidence in the text of what was run:
+ * the server's own id or its distinctive name.
+ */
+function usedIt(payload, card) {
+  const inp = JSON.stringify(payload.tool_input || '');
+  const hay = inp.toLowerCase();
+  const id = String(card.id || '').toLowerCase();
+  const tail = id.split('/').pop() || '';
+  if (id && hay.includes(id)) return true;
+  // A bare tail has to be distinctive: "bash" or "api" would match anything.
+  if (tail.length >= 6 && hay.includes(tail)) return true;
+  const name = String(card.name || '').toLowerCase();
+  return Boolean(name.length >= 6 && hay.includes(name));
+}
+
+/** Tell the layer a card really helped — and only then. */
+async function credit(card, task) {
+  const got = await post('/api/help', { toolId: card.id, task: task, accepted: true });
+  if (!got || !got.receipt) return false;
+  await post('/api/confirm', { receipt: got.receipt,
+    note: 'the agent ran it after the tool had failed ' + THRESHOLD + ' times' });
+  return true;
+}
+
 function ask(task) {
   const url = SITE + '/api/council?task=' + encodeURIComponent(task.slice(0, 200));
   // http as well as https on purpose: the project keeps a local mirror on 8791,
@@ -124,6 +196,23 @@ async function main(payload) {
   const row = state[key] || {};
 
   if (!failed(payload)) {
+    // THE LOOP CLOSES HERE. If we suggested a card, and the session then ran
+    // that very card, and the run succeeded — the layer earned the credit and
+    // says so. Anything weaker would rank the public Helpers table by
+    // coincidence: a command that merely succeeded AFTER we spoke proves
+    // nothing, because the user may simply have fixed it themselves.
+    if (row.card && usedIt(payload, row.card) && !row.credited) {
+      row.credited = Date.now();
+      state[key] = row;
+      save(state);
+      try {
+        await credit(row.card, row.task || tool);
+        note('CREDIT ' + row.card.id + ' — its own name was in the command that worked');
+      } catch (e) {
+        note('credit failed for ' + row.card.id + ': ' + String(e).slice(0, 60));
+      }
+      quiet();
+    }
     // Success clears the wall. Three failures with a success in between is not
     // being stuck, it is ordinary work.
     if (state[key]) { delete state[key]; save(state); }
@@ -152,33 +241,48 @@ async function main(payload) {
     d = await ask(task);
   } catch (e) {
     // The layer is unreachable. That is not the user's problem right now.
-    row.n = 0; save(state); quiet();
+    row.n = 0; save(state);
+    note('layer unreachable for ' + tool + ': ' + String(e).slice(0, 60));
+    quiet();
   }
 
   row.n = 0;
   row.spoke = Date.now();
-  save(state);
+  row.task = task;
 
   // The refusal is the most expensive thing this layer can say — two model
   // houses have to agree before it does — so it is never softened and never
   // buried under a table of cards.
   if (d && d.noFit) {
+    row.card = null;
+    save(state);
+    note('NO-FIT for ' + tool + ' — the registry holds nothing for this');
     const why = String(d.noFit.why || '').trim();
     quiet('WAITLAYER · ' + tool + ' упал ' + THRESHOLD + ' раз(а). Слой посмотрел реестр: '
       + 'ничего подходящего нет' + (why ? ' — ' + why.slice(0, 120) : '.'));
   }
 
   const cards = ((d && d.proposals) || []).slice(0, 3);
-  if (!cards.length) quiet();
+  if (!cards.length) { save(state); quiet(); }
   const best = cards[0];
+  // Remembered so the next success can be checked against it: a suggestion the
+  // layer cannot recognise afterwards can never be proved to have helped.
+  row.card = { id: best.card.id, name: String(best.card.title || '') };
+  row.credited = 0;
+  save(state);
+  note('DEALT ' + best.card.id + ' after ' + tool + ' failed ' + THRESHOLD + ' times');
   const name = String(best.card.title || best.card.id).slice(0, 40);
   const others = cards.slice(1)
     .map((p) => String(p.card.title || p.card.id).slice(0, 24)).join(', ');
-  let note = 'WAITLAYER · ' + tool + ' упал ' + THRESHOLD + ' раз(а) подряд. '
+  // НЕ `note`: так называется функция журнала выше, и локальная переменная с тем
+  // же именем затеняла её на всю функцию — вызов note('DEALT ...') несколькими
+  // строками выше падал в temporal dead zone, а общий catch превращал это в
+  // тихое молчание. Совет пропал целиком, и ни одна строка об этом не сказала.
+  let line = 'WAITLAYER · ' + tool + ' упал ' + THRESHOLD + ' раз(а) подряд. '
     + 'Совет предлагает: ' + name + ' — ' + String(best.pitch || '').slice(0, 100);
-  if (others) note += ' · ещё: ' + others;
-  note += ' · стол: ' + SITE + '/#/t/' + encodeURIComponent(task.slice(0, 200));
-  quiet(note);
+  if (others) line += ' · ещё: ' + others;
+  line += ' · стол: ' + SITE + '/#/t/' + encodeURIComponent(task.slice(0, 200));
+  quiet(line);
 }
 
 let input = '';
@@ -192,7 +296,15 @@ process.stdin.on('end', () => {
   } catch (e) {
     payload = {};
   }
-  main(payload).catch(() => quiet());
+  // Ошибка ЗАПИСЫВАЕТСЯ, а не только глотается. Этот catch однажды превратил
+  // ReferenceError в тихое `{}`: совет исчез целиком, хук выглядел исправным, и
+  // поймали это только тесты. Молчать в чужой сессии он обязан — но молчать
+  // БЕССЛЕДНО не должен, иначе поломку нельзя отличить от «нечего сказать».
+  main(payload).catch((e) => {
+    const trace = String((e && e.stack) || e).replace(/\s+/g, ' ');
+    note('BROKEN: ' + trace.slice(0, 200));
+    quiet();
+  });
 });
 // A hook that hangs holds up the session; the layer is never worth that.
 setTimeout(() => quiet(), TIMEOUT + 4000).unref();
