@@ -85,8 +85,42 @@ hook emitted that word where the harness expects JSON, in someone else's
 session. Claude Code is itself a Node program, so every machine that can install
 this plugin already has the one interpreter this needs.
 
-Tests: `python test_stuck.py` — 23 checks, the layer replaced by a local server
+Tests: `python test_stuck.py` — 49 checks, the layer replaced by a local server
 so the suite never burns the model keys the live site shares.
+
+## What leaves your machine
+
+Only when a tool has failed three times in a row, and at most once every fifteen
+minutes, the hook sends **one line** to the layer: the tool's name and the last
+error line of that failure, capped at 180 characters, as
+`GET /api/council?task=...`. Nothing else — not your prompt, not your code, not
+the command, not the rest of the output, and no identifier for you or the
+session. Successful runs send nothing at all.
+
+That line is **scrubbed before it is sent**, because the last line of a failure
+is exactly where credentials turn up: a failed `curl` prints its own
+`?api_key=`, an HTTP debug dump prints `Authorization: Bearer ...`, a database
+driver prints its connection string. Removed by shape, not by keyword:
+
+| in the error line | what is sent |
+|---|---|
+| `...charges?api_key=sk_live_51H8x...` | `...charges?<redacted>` |
+| `Authorization: Bearer eyJhbGciOi...` | `Authorization: Bearer <redacted>` |
+| `GROQ_API_KEY=gsk_abcdef...` | `GROQ_API_KEY=<redacted>` |
+| `open 'C:\Users\yourname\notes.txt'` | `open '~\notes.txt'` |
+| `mail to you@example.com bounced` | `mail to <email> bounced` |
+| any 32+ hex run, JWT, or PEM block | `<redacted>` |
+
+Ordinary error text is left alone — `error: unterminated string literal at line
+42` arrives exactly as written, because a scrubber that redacts everything
+leaves the layer nothing to work with. Eighteen of the checks in
+`test_stuck.py` are about this, and they assert both halves: that the line was
+really transmitted, and that the secret in it was not.
+
+Turn the whole thing off by removing the hook from `hooks/hooks.json`, or point
+it somewhere else with `WAITLAYER_URL` (a local mirror works: `http://` is
+allowed on purpose). `WAITLAYER_STUCK_AT` changes the three-failure threshold,
+`WAITLAYER_STUCK_COOLDOWN` the fifteen minutes.
 
 ## The loop closes: the layer learns what actually helped
 

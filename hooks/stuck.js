@@ -76,6 +76,59 @@ function failed(p) {
   return /\b(error|exception|traceback|failed|refused)\b/i.test(text);
 }
 
+/** WHAT LEAVES THE MACHINE, AND WHAT MUST NOT.
+ *
+ *  This hook takes the last line of a FAILED tool call and sends it to the
+ *  layer as a query parameter, so the line lands in a URL and in whatever
+ *  access log sits in front of it. The last line of a failure is exactly where
+ *  credentials live: a curl that failed prints its own `?api_key=`, an HTTP
+ *  debug dump prints `Authorization: Bearer ...`, a database driver prints its
+ *  connection string, and every one of them names somebody's home directory.
+ *  This plugin runs on other people's machines, so shipping that raw was a
+ *  leak we wrote ourselves.
+ *
+ *  So nothing reaches the network before passing through here. The rule is
+ *  redact BY SHAPE, not by keyword: a secret does not have to sit next to the
+ *  word "key" to be a secret, and a scrubber that only catches the labelled
+ *  ones gives false comfort. Anything long and high-entropy goes, whole query
+ *  strings go, home paths collapse to `~`, addresses go.
+ *
+ *  It is deliberately blunt. Over-redacting costs a slightly worse table;
+ *  under-redacting costs somebody their key.
+ */
+function scrub(text) {
+  var t = String(text || '');
+  /* Whole query strings and userinfo first, before anything inside them gets
+     a chance to look like an ordinary word. */
+  t = t.replace(/([a-z][a-z0-9+.\-]*:\/\/)([^\s/@]+@)?([^\s?#]*)(\?[^\s#]*)?/gi,
+    function (m, sch, user, host, q) {
+      return sch + (user ? '<user>@' : '') + host + (q ? '?<redacted>' : '');
+    });
+  /* PEM blocks before anything chops them up. */
+  t = t.replace(/-----BEGIN[^-]*-----[\s\S]*?-----END[^-]*-----/g, '<redacted key>');
+  /* Labelled secrets, whatever separator was used. */
+  t = t.replace(
+    /([A-Za-z_]*(?:api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|password|passwd|pwd|credential)[A-Za-z_]*)(\s*[:=]\s*|\s+)("[^"]*"|'[^']*'|\S+)/gi,
+    function (m, name) { return name + '=<redacted>'; });
+  t = t.replace(/(bearer|basic)\s+\S+/gi,
+    function (m, kind) { return kind + ' <redacted>'; });
+  /* Shapes, for the ones nobody labelled. */
+  t = t.replace(
+    /(sk-or-v1-|sk-|gsk_|AIza|ghp_|gho_|ghu_|ghs_|github_pat_|xox[baprs]-|shpat_|glpat-|npm_|AKIA)[A-Za-z0-9_\-]{8,}/g,
+    '<redacted>');
+  t = t.replace(/eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}(\.[A-Za-z0-9_\-]+)?/g,
+    '<redacted jwt>');
+  t = t.replace(/0x[a-fA-F0-9]{32,}/g, '<redacted hex>');
+  t = t.replace(/[A-Fa-f0-9]{32,}/g, '<redacted hex>');
+  /* A long unbroken run of base64-ish characters is not prose. 40 is above
+     anything English writes and below every key we have had to redact. */
+  t = t.replace(/[A-Za-z0-9_\-+/]{40,}={0,2}/g, '<redacted>');
+  /* Whose machine this is, is nobody's business. */
+  t = t.replace(/([A-Za-z]:[\\/]+Users[\\/]+|\/home\/|\/Users\/)[^\\/\s:'"]+/gi, '~');
+  t = t.replace(/[\w.+\-]+@[\w\-]+\.[\w.\-]+/g, '<email>');
+  return t;
+}
+
 /** The line worth asking about: the END of the output, where the cause is.
  *  A failed run usually prints a screen of good output first, so the FIRST line
  *  of a failure is the last line of a success. */
@@ -86,10 +139,10 @@ function reason(p) {
     .map((s) => s.replace(/\s+/g, ' ').trim()).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i--) {
     if (/error|exception|traceback|fail|refus|denied|not found/i.test(lines[i])) {
-      return lines[i].slice(0, 180);
+      return scrub(lines[i]).slice(0, 180);
     }
   }
-  return lines.length ? lines[lines.length - 1].slice(0, 180) : '';
+  return lines.length ? scrub(lines[lines.length - 1]).slice(0, 180) : '';
 }
 
 /** One line per firing, so the layer can be asked what it actually did.
