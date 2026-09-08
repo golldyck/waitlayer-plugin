@@ -1,0 +1,13 @@
+{
+  "PostToolUse": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stuck.js\"",
+          "timeout": 20
+        }
+      ]
+    }
+  ]
+}
