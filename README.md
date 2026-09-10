@@ -34,7 +34,7 @@ is a `statusLine` command, and a status line is a setting rather than a plugin
 surface. It comes from the installer instead:
 
 ```
-curl -fsSL https://future-assembly-483c0f.vibe.commonsmade.com/init.py | python -
+curl -fsSL https://future-assembly-483c0f.vibe.commonsmade.com/install.py | python -
 ```
 
 The installer keeps any status line you already have: it runs yours first and
